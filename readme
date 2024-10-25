@@ -1,0 +1,24 @@
+passo 1
+
+descompacte o zip dentro da pasta modules no buildroot
+------------------------------------------------------------------------------------------------------------------
+
+passo 2
+
+executar o comando make nessa mesma pasta
+------------------------------------------------------------------------------------------------------------------
+
+passo 3
+
+ir até a pasta raiz do buildroot e executar o camando make também
+------------------------------------------------------------------------------------------------------------------
+
+passo 4
+
+executar o qemu e carregar o modulo como o exemplo a seguir:
+$ modprobe mquld max_messages=5 max_message_size=256
+------------------------------------------------------------------------------------------------------------------
+
+passo 5
+
+dentro do qemu, usar o comando "user_app" para criar um processo
