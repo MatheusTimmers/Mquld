@@ -4,6 +4,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/wait.h>
+#include <errno.h>
 
 #define DEVICE_PATH "/dev/mqueue"
 #define MAX_NAME_LEN 30
@@ -52,6 +53,22 @@ void send_message(const char *sender_name, const char *target_name, int count) {
     close(fd);
 }
 
+int is_process_registered(const char *target_name) {
+    char check_command[MAX_NAME_LEN + 7];
+    snprintf(check_command, sizeof(check_command), "/%s teste", target_name);
+
+    int fd = open(DEVICE_PATH, O_WRONLY);
+    if (fd < 0) {
+        perror("Failed to open device file");
+        exit(EXIT_FAILURE);
+    }
+
+    int result = write(fd, check_command, strlen(check_command));
+    close(fd);
+
+    return result >= 0; // retorna true se o comando foi aceito
+}
+
 void read_messages(const char *name) {
     int fd = open(DEVICE_PATH, O_RDONLY);
     if (fd < 0) {
@@ -83,10 +100,15 @@ int main(int argc, char *argv[]) {
     // Registrar o processo no módulo
     register_process(name);
 
-    // solução preguiçosa
     sleep(5);
 
-    // Enviar mensagens para os processos alvos
+    // Esperar o target1 estar registrado antes de enviar as mensagens
+    while (!is_process_registered(target1)) {
+        printf("Esperando o processo %s estar registrado...\n", target1);
+        sleep(1); // Aguarda um segundo antes de verificar novamente
+    }
+
+    // Enviar mensagens para o processo alvo
     for (int i = 1; i <= message_count; i++) {
         send_message(name, target1, i);
         printf("Processo %s enviou mensagem %d para %s.\n", name, i, target1);
