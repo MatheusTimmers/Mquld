@@ -21,8 +21,8 @@ MODULE_AUTHOR("Matheus Timmers, Matheus Robin e Pedro de Ros");
 MODULE_DESCRIPTION("mquld - Message Queue Under Linux Driver");
 
 // Variaveis globais
-static int max_messages = 5;
-static int max_message_size = 256;
+static int max_messages = -1;
+static int max_message_size = -1;
 static int major_number;
 static int device_open = 0;
 static struct class *mquld_class = NULL;
@@ -39,96 +39,66 @@ MODULE_PARM_DESC(max_messages, "Número máximo de mensagens por processo");
 MODULE_PARM_DESC(max_message_size,
                  "Tamanho máximo de cada mensagem (em bytes)");
 
-#define MSG_SIZE 256
+#define NAME_SIZE 30
 
 // Estruturas
 struct message_s {
-  struct list_head list;
-  char data[MSG_SIZE];
+  struct list_head list_m;
+  char* data;
+  unsigned int size;
 };
-
-struct list_head list;
 
 struct process_entry {
   pid_t pid;
-  char name[30];
+  char name[NAME_SIZE];
   struct list_head message_queue;
-  struct list_head list;
+  struct list_head list_p;
   int message_count;
 };
 
 // Implementacao
 
-int list_add_entry(char *data) {
-  struct message_s *new_node = kmalloc((sizeof(struct message_s)), GFP_KERNEL);
-
-  if (!new_node) {
-    printk(KERN_INFO
-           "Memory allocation failed, this should never fail due to GFP_KERNEL "
-           "flag\n");
-
-    return 1;
-  }
-
-  strscpy(new_node->data, data, MSG_SIZE);
-  list_add_tail(&(new_node->list), &list);
-
-  return 0;
+static void list_delete_head(struct process_entry *proc_entry) {
+    struct message_s *msg = list_first_entry(&proc_entry->message_queue, struct message_s, list_m);
+    list_del(&msg->list_m);
+    kfree(msg);
 }
 
-void list_show(void) {
-  struct message_s *entry = NULL;
-  int i = 0;
+static void free_process(struct process_entry *proc_entry) {
+    struct message_s *msg;
+    struct list_head *msg_pos, *msg_q;
 
-  list_for_each_entry(entry, &list, list) {
-    printk(KERN_INFO "Message #%d: %s\n", i++, entry->data);
-  }
-}
-
-int list_delete_head(void) {
-  struct message_s *entry = NULL;
-
-  if (list_empty(&list)) {
-    printk(KERN_INFO "Empty list.\n");
-
-    return 1;
-  }
-
-  entry = list_first_entry(&list, struct message_s, list);
-
-  list_del(&entry->list);
-  kfree(entry);
-
-  return 0;
-}
-
-int list_delete_entry(char *data) {
-  struct message_s *entry = NULL;
-
-  list_for_each_entry(entry, &list, list) {
-    if (strcmp(entry->data, data) == 0) {
-      list_del(&(entry->list));
-      kfree(entry);
-
-      return 0;
+    list_for_each_safe(msg_pos, msg_q, &proc_entry->message_queue) {
+        msg = list_entry(msg_pos, struct message_s, list_m);
+        kfree(msg->data);
+        kfree(msg);
     }
-  }
-
-  printk(KERN_INFO "Could not find data.");
-
-  return 1;
+    list_del(&proc_entry->list_p);
+    kfree(proc_entry);
 }
 
 static struct process_entry *find_process_by_name(char *name) {
   struct process_entry *proc_entry;
   struct list_head *pos;
 
-  list_for_each_entry(proc_entry, &process_list, list) {
+  list_for_each_entry(proc_entry, &process_list, list_p) {
     if (strcmp(proc_entry->name, name) == 0) {
       return proc_entry;
     }
   }
   return NULL;
+}
+
+static struct process_entry *find_process_by_pid(pid_t pid) {
+    struct process_entry *proc_entry;
+
+    list_for_each_entry(proc_entry, &process_list, list_p) {
+        if (proc_entry->pid == pid) {
+            return proc_entry;
+        }
+    }
+
+    return NULL;
 }
 
 static struct process_entry *find_or_register_process(pid_t pid, char *name) {
@@ -137,6 +107,7 @@ static struct process_entry *find_or_register_process(pid_t pid, char *name) {
   mutex_lock(&mquld_mutex);
   proc_entry = find_process_by_name(name);
 
+  // Se o processo nao existir cria
   if (!proc_entry) {
     proc_entry = kmalloc(sizeof(struct process_entry), GFP_KERNEL);
     if (!proc_entry) {
@@ -145,13 +116,14 @@ static struct process_entry *find_or_register_process(pid_t pid, char *name) {
     }
 
     proc_entry->pid = pid;
-    strncpy(proc_entry->name, name, sizeof(proc_entry->name) - 1);
-    proc_entry->name[sizeof(proc_entry->name) - 1] = '\0';
+    strncpy(proc_entry->name, name, NAME_SIZE - 1);
+    proc_entry->name[NAME_SIZE - 1] = '\0';
     proc_entry->message_count = 0;
 
     INIT_LIST_HEAD(&proc_entry->message_queue);
-    INIT_LIST_HEAD(&proc_entry->list);
-    list_add(&proc_entry->list, &process_list);
+    INIT_LIST_HEAD(&proc_entry->list_p);
+
+    list_add(&proc_entry->list_p, &process_list);
     printk(KERN_INFO "mquld: Process with pid %d and name %s registered.\n",
            pid, proc_entry->name);
   } else {
@@ -166,7 +138,7 @@ static struct process_entry *find_or_register_process(pid_t pid, char *name) {
 static int send_message_to_process(struct process_entry *target_entry,
                                    char *message) {
   if (target_entry->message_count >= max_messages) {
-    list_delete_head();
+    list_delete_head(target_entry);
     target_entry->message_count--;
   }
 
@@ -176,10 +148,17 @@ static int send_message_to_process(struct process_entry *target_entry,
     return -ENOMEM;
   }
 
-  strncpy(new_msg->data, message, MSG_SIZE);
-  new_msg->data[MSG_SIZE - 1] = '\0';
+  new_msg->data = kmalloc(max_message_size, GFP_KERNEL);
+  if (!new_msg->data) {
+      kfree(new_msg);
+      printk(KERN_ALERT "mquld: Failed to allocate memory for message data.\n");
+      return -ENOMEM;
+  }
+  strncpy(new_msg->data, message, max_message_size - 1);
+  new_msg->data[max_message_size - 1] = '\0';
+  new_msg->size = strlen(new_msg->data);
 
-  list_add_tail(&new_msg->list, &target_entry->message_queue);
+  list_add_tail(&new_msg->list_m, &target_entry->message_queue);
   target_entry->message_count++;
 
   printk(KERN_INFO "mquld: Message sent to process %s: %s\n",
@@ -189,8 +168,6 @@ static int send_message_to_process(struct process_entry *target_entry,
 
 // Função chamada quando o módulo é aberto
 static int mquld_open(struct inode *inode, struct file *file) {
-  printk(KERN_INFO "mquld: Device opened.\n");
-
   if (device_open) return -EBUSY;
 
   device_open++;
@@ -201,7 +178,7 @@ static int mquld_open(struct inode *inode, struct file *file) {
 
 // Função que libera o módulo
 static int mquld_release(struct inode *inode, struct file *file) {
-  device_open--;  // Correção de maiúsculas
+  device_open--;
   module_put(THIS_MODULE);
 
   return SUCCESS;
@@ -210,13 +187,55 @@ static int mquld_release(struct inode *inode, struct file *file) {
 // Função de leitura do módulo
 static ssize_t mquld_read(struct file *file, char __user *buf, size_t count,
                           loff_t *ppos) {
-  printk(KERN_INFO "mquld: Read operation.\n");
+  struct process_entry *proc_entry;
+  struct message_s *msg;
+  size_t message_size;
+  int ret;
 
-#ifdef DEBUG
-  list_show();
-#endif
+  pid_t pid = task_pid_nr(current);
 
-  return SUCCESS;
+  proc_entry = find_process_by_pid(pid);
+  if (!proc_entry) {
+    printk(
+        KERN_ALERT
+        "mquld: Unregistered process, failed to find or register.\n");
+    return -EFAULT;
+  }
+
+  mutex_lock(&mquld_mutex);
+
+  if (list_empty(&proc_entry->message_queue)) {
+    printk(KERN_INFO "mquld: No messages for process %s (PID %d).\n",
+           proc_entry->name, pid);
+    mutex_unlock(&mquld_mutex);
+    return 0;
+  }
+
+  msg = list_first_entry(&proc_entry->message_queue, struct message_s, list_m);
+
+  message_size = min(count, (size_t)msg->size);
+
+  ret = copy_to_user(buf, msg->data, message_size);
+  if (ret != 0) {
+    printk(KERN_ALERT
+           "mquld: Failed to copy data to user space.\n");
+    mutex_unlock(&mquld_mutex);
+    return -EFAULT;
+  }
+
+  list_del(&msg->list_m);
+  kfree(msg->data);
+  kfree(msg);
+  proc_entry->message_count--;
+
+  mutex_unlock(&mquld_mutex);
+
+  printk(KERN_INFO
+         "mquld: Read successfully for process %s (PID %d), "
+         "%zu bytes read.\n",
+         proc_entry->name, pid, message_size);
+
+  return message_size;
 }
 
 // Função de escrita do módulo
@@ -240,7 +259,7 @@ static ssize_t mquld_write(struct file *file, const char __user *buf,
   if (strncmp(kbuf, "/reg ", 5) == 0) {
     char *name = kbuf + 5;
 
-    if (strlen(name) >= sizeof(((struct process_entry *)0)->name)) {
+    if (strlen(name) >= NAME_SIZE) {
       printk(KERN_ALERT "mquld: Process name too long.\n");
       kfree(kbuf);
       return -EINVAL;
@@ -252,8 +271,6 @@ static ssize_t mquld_write(struct file *file, const char __user *buf,
       printk(KERN_ALERT "mquld: Failed to register process entry.\n");
       return -ENOMEM;
     }
-
-    list_add_entry(name);
   } else if (strncmp(kbuf, "/unreg ", 7) == 0) {
     char *name = kbuf + 7;
 
@@ -265,20 +282,18 @@ static ssize_t mquld_write(struct file *file, const char __user *buf,
     }
 
     mutex_lock(&mquld_mutex);
-    struct message_s *msg;
-    struct list_head *msg_pos, *msg_q;
-    list_for_each_safe(msg_pos, msg_q, &proc_entry->message_queue) {
-      msg = list_entry(msg_pos, struct message_s, list);
-      kfree(msg);
-    }
-    list_del(&proc_entry->list);
-    kfree(proc_entry);
+    free_process(proc_entry);
     mutex_unlock(&mquld_mutex);
 
     printk(KERN_INFO "mquld: Process %s unregistered and removed.\n", name);
   } else {
     char *name = kbuf + 1;
     char *message = strchr(name, ' ');
+
+    if (strlen(message) > max_message_size) {
+      printk(KERN_ALERT "mquld: Message too large for process %s.\n", name);
+      return -EINVAL;
+    }
 
     if (!message) {
       printk(KERN_ALERT "mquld: Invalid message format.\n");
@@ -316,6 +331,12 @@ static struct file_operations fops = {.owner = THIS_MODULE,
 
 // Função chamada na criação do módulo
 static int __init mquld_init(void) {
+
+  if (max_messages == -1 && max_message_size == -1) {
+    printk(KERN_ALERT "mquld: Not loaded. Pass two integers!\n");
+    return -EINVAL;
+  }
+
   major_number = register_chrdev(0, DEVICE_NAME, &fops);
   if (major_number < 0) {
     printk(KERN_ALERT "mquld: Failed to register a major number.\n");
@@ -338,8 +359,6 @@ static int __init mquld_init(void) {
     return PTR_ERR(mquld_device);
   }
 
-  INIT_LIST_HEAD(&list);
-
   printk(KERN_INFO "mquld: Device class created successfully.\n");
   return SUCCESS;
 }
@@ -351,17 +370,8 @@ static void __exit mquld_exit(void) {
 
   mutex_lock(&mquld_mutex);
   list_for_each_safe(pos, q, &process_list) {
-    proc_entry = list_entry(pos, struct process_entry, list);
-
-    struct message_s *msg;
-    struct list_head *msg_pos, *msg_q;
-    list_for_each_safe(msg_pos, msg_q, &proc_entry->message_queue) {
-      msg = list_entry(msg_pos, struct message_s, list);
-      kfree(msg);
-    }
-
-    list_del(pos);
-    kfree(proc_entry);
+    proc_entry = list_entry(pos, struct process_entry, list_p);
+    free_process(proc_entry);
   }
   mutex_unlock(&mquld_mutex);
 

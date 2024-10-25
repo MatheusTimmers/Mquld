@@ -1,116 +1,103 @@
 #include <stdio.h>
-#include <fcntl.h>
-#include <unistd.h>
+#include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <sys/wait.h>
 
 #define DEVICE_PATH "/dev/mqueue"
+#define MAX_NAME_LEN 30
+#define MAX_MESSAGE_LEN 100
 
-void register_process(int fd, const char *process_name) {
-    char command[50];
-    snprintf(command, sizeof(command), "/reg %s", process_name);
-
-    if (write(fd, command, strlen(command)) < 0) {
-        perror("Failed to register the process");
-    } else {
-        printf("Process %s registered successfully.\n", process_name);
-    }
-}
-
-void send_message(int fd, const char *process_name, const char *message) {
-    char command[256];
-    snprintf(command, sizeof(command), "/%s %s", process_name, message);
-
-    if (write(fd, command, strlen(command)) < 0) {
-        perror("Failed to send the message");
-    } else {
-        printf("Message sent to process %s: %s\n", process_name, message);
-    }
-}
-
-void unregister_process(int fd, const char *process_name) {
-    char command[50];
-    snprintf(command, sizeof(command), "/unreg %s", process_name);
-
-    if (write(fd, command, strlen(command)) < 0) {
-        perror("Failed to unregister the process");
-    } else {
-        printf("Process %s unregistered successfully.\n", process_name);
-    }
-}
-
-void read_message(int fd) {
-    char buffer[256];
-    ssize_t ret;
-
-    ret = read(fd, buffer, sizeof(buffer) - 1);
-    if (ret < 0) {
-        perror("Failed to read from the device");
-    } else {
-        buffer[ret] = '\0'; // Garantir que a string tenha null-terminated
-        printf("Received message: %s\n", buffer);
-    }
-}
-
-int main() {
-    int fd;
-    int choice;
-    char process_name[30];
-    char message[256];
-
-    // Abrir o dispositivo
-    fd = open(DEVICE_PATH, O_RDWR);
+void register_process(const char *name) {
+    char command[MAX_NAME_LEN + 5];
+    snprintf(command, sizeof(command), "/reg %s", name);
+    
+    int fd = open(DEVICE_PATH, O_WRONLY);
     if (fd < 0) {
-        perror("Failed to open the device");
-        return -1;
+        perror("Failed to open device file");
+        exit(EXIT_FAILURE);
     }
 
-    while (1) {
-        printf("\nChoose an operation:\n");
-        printf("1. Register process\n");
-        printf("2. Send message\n");
-        printf("3. Unregister process\n");
-        printf("4. Read message\n");
-        printf("5. Exit\n");
-        printf("Enter your choice: ");
-        scanf("%d", &choice);
+    write(fd, command, strlen(command));
+    close(fd);
+}
 
-        switch (choice) {
-            case 1:
-                printf("Enter process name: ");
-                scanf("%s", process_name);
-                register_process(fd, process_name);
-                break;
-
-            case 2:
-                printf("Enter process name: ");
-                scanf("%s", process_name);
-                printf("Enter message: ");
-                getchar(); // Limpar o buffer
-                fgets(message, sizeof(message), stdin);
-                message[strcspn(message, "\n")] = '\0'; // Remover newline
-                send_message(fd, process_name, message);
-                break;
-
-            case 3:
-                printf("Enter process name to unregister: ");
-                scanf("%s", process_name);
-                unregister_process(fd, process_name);
-                break;
-
-            case 4:
-                read_message(fd);
-                break;
-
-            case 5:
-                close(fd);
-                printf("Exiting...\n");
-                return 0;
-
-            default:
-                printf("Invalid choice. Please try again.\n");
-        }
+void unregister_process(const char *name) {
+    char command[MAX_NAME_LEN + 7];
+    snprintf(command, sizeof(command), "/unreg %s", name);
+    
+    int fd = open(DEVICE_PATH, O_WRONLY);
+    if (fd < 0) {
+        perror("Failed to open device file");
+        exit(EXIT_FAILURE);
     }
+
+    write(fd, command, strlen(command));
+    close(fd);
+}
+
+void send_message(const char *sender_name, const char *target_name, int count) {
+    char command[MAX_NAME_LEN * 2 + MAX_MESSAGE_LEN + 10];
+    snprintf(command, sizeof(command), "/%s ola, %s eu sou %s essa eh a minha %d mensagem para voce", 
+    target_name, target_name, sender_name, count);
+    
+    int fd = open(DEVICE_PATH, O_WRONLY);
+    if (fd < 0) {
+        perror("Failed to open device file");
+        exit(EXIT_FAILURE);
+    }
+
+    write(fd, command, strlen(command));
+    close(fd);
+}
+
+void read_messages(const char *name) {
+    int fd = open(DEVICE_PATH, O_RDONLY);
+    if (fd < 0) {
+        perror("Failed to open device file for reading");
+        exit(EXIT_FAILURE);
+    }
+
+    char buffer[MAX_MESSAGE_LEN];
+    int bytes_read;
+
+    while ((bytes_read = read(fd, buffer, sizeof(buffer) - 1)) > 0) {
+        buffer[bytes_read] = '\0';
+        printf("Mensagem recebida por %s: %s\n", name, buffer);
+    }
+
+    close(fd);
+}
+
+int main(int argc, char *argv[]) {
+    if (argc != 4) {
+        fprintf(stderr, "Uso: %s <nome> <proc1> <number>\n", argv[0]);
+        exit(EXIT_FAILURE);
+    }
+
+    const char *name = argv[1];
+    const char *target1 = argv[2];
+    int message_count = atoi(argv[3]);
+
+    // Registrar o processo no módulo
+    register_process(name);
+
+    // solução preguiçosa
+    sleep(5);
+
+    // Enviar mensagens para os processos alvos
+    for (int i = 1; i <= message_count; i++) {
+        send_message(name, target1, i);
+        printf("Processo %s enviou mensagem %d para %s.\n", name, i, target1);
+    }
+
+    // Ler mensagens recebidas após o envio
+    printf("Processo %s está lendo mensagens recebidas...\n", name);
+    read_messages(name);
+
+    // Desregistrar o processo no módulo
+    unregister_process(name);
 
     return 0;
 }
-

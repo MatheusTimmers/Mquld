@@ -1,0 +1,21 @@
+- Crie uma pasta `modules/mquld` no buildroot com o código fonte do driver (arquivos `Makefile`,`mquld.c`,`test_mquld`) 
+- no diretório `modules/mquld` rode o comando `make`
+- compile novamente o buildroot rodando o comando `make` na pasta raiz do buildroot
+- inicie a distribuição com o comando 
+    ```
+    sudo qemu-system-i386 --kernel output/images/bzImage --hda output/images/rootfs.ext2 --nographic --append "console=ttyS0 root=/dev/sda"
+    ```
+
+para carregar o modulo
+
+modprobe mquld max_messages=5 max_message_size=256
+
+para rodar os testes
+
+user_app <process_name> <target> <message_sent>
+
+ex:
+user_app proc1 proc2 5 & user_app proc2 proc1 3
+
+
+para registrar todos os processos antes de inciar o envio é esperado 5 segundos antes de começar a enviar
